@@ -16,27 +16,40 @@ c [preview](https://telegram.org/blog/link-preview), ссылок на фото 
 В нашем хендлере обработка будет ну уж очень лаконичная🙃:
 
 ```python
-async def handle_photo_upload(messsage: types.Message, file_uploader: FileUploader):
-    photo = messsage.photo[-1]
-    await messsage.bot.send_chat_action(messsage.chat.id, 'upload_photo')
-    uploaded_photo = await file_uploader.upload_photos(photo)
-    await messsage.answer(text=uploaded_photo.link)
+from aiogram import types
+
+from tgbot.integrations.telegraph.abstract import FileUploader
+
+
+async def handle_photo_upload(message: types.Message, file_uploader: FileUploader):
+    photo = message.photo[-1]
+    await message.bot.send_chat_action(message.chat.id, 'upload_photo')
+    uploaded_photo = await file_uploader.upload_photo(photo)
+    await message.answer(text=uploaded_photo.link)
 ```
 
 # Реализация собственного модуля для работы с Telegraph API
 
-## Полезность абстракций
+## Полезно знать
 
-При реализации сервиса для работы с телеграфом мы будем использовать его в хендлере через
-абстракцию, важно знать чем они полезны и что они нам приносят.
+При реализации сервиса для работы с телеграфом мы будем стыкаться с различными понятиями и фишками.
+Хотелось бы сразу объяснить их суть, что бы вы не входили в ступор.
+
+### Зачем нужны абстракции?
 
 * Мы абстрагируемся от реальной реализации класса и всего что связано с этим сервисом собственной
   абстракцией, которая поможет нам легко изменить сервис для загрузки файлов, если вам по каким-то
-  причинам не подошёл телеграф, к примеру на популярный среди разработчиков `AWS S3`, просто
-  унаследовав абстрактный класс и имлементировав все нужные методы.
-* Следуя документации `aiohttp` и рекомендациями её разработчика следует использовать единственный
-  экземпляр `aiohttp.ClientSession`. С помощью функций данная рекомендация не может быть корректно
-  реализована.
+  причинам не подошёл телеграф, к примеру на популярный среди разработчиков `AWS S3` или любое
+  другое хранилище файлов, просто унаследовав абстрактный класс и имлементировав все нужные методы.
+
+### Небольшие советы по работе с aiohttp
+
+* Следуя документации `aiohttp` и прислушиваясь к рекомендациям её разработчика не следует создавать
+  сессию  `aiohttp.ClientSession` на каждый запрос, собственно использовать контекстные менеджеры,
+  лучше хранить её в единичном экземпляре где-то в классе. С помощью функций данная рекомендация не
+  может быть корректно реализована.
+* Не нужно создавать `aiohttp` сессию вне асинхронных функций, это приводит к проблемам и
+  непредвиденным ошибкам
 
 Итак, теперь давайте кратко обсудим как мы можем написать такую обвертку и шаг за шагом попробуем
 написать что-то подобное своё😎
@@ -57,11 +70,11 @@ from tgbot.integrations.telegraph.types import UploadedFile
 
 class FileUploader(abc.ABC):
 
-  async def upload_photo(self, photo: PhotoSize) -> UploadedFile:
-    raise NotImplementedError
+    async def upload_photo(self, photo: PhotoSize) -> UploadedFile:
+        raise NotImplementedError
 
-  async def close(self) -> None:
-    raise NotImplementedError
+    async def close(self) -> None:
+        raise NotImplementedError
 ```
 
 Выглядит достаточно красиво и лаконично, метод `upload_photo` принимает фотографию и загружает её на
@@ -95,11 +108,11 @@ from tgbot.integrations.telegraph.config import BASE_TELEGRAPH_API_LINK
 
 
 class UploadedFile(BaseModel):
-  link: str = Field(..., alias="src")
+    link: str = Field(..., alias="src")
 
-  @validator("link")
-  def link_validator(cls, value: str):
-    return BASE_TELEGRAPH_API_LINK.format(endpoint=value)
+    @validator("link")
+    def link_validator(cls, value: str):
+        return BASE_TELEGRAPH_API_LINK.format(endpoint=value)
 ```
 
 ## Реализация клиента для работы с телеграфом
@@ -119,37 +132,37 @@ from tgbot.integrations.telegraph.types import UploadedFile
 
 
 class Telegraph(FileUploader):
-  def __init__(self) -> None:
-    self._session: Optional[aiohttp.ClientSession] = None
+    def __init__(self) -> None:
+        self._session: Optional[aiohttp.ClientSession] = None
 
-  async def upload_photo(self, photo: PhotoSize) -> UploadedFile:
-    form = aiohttp.FormData(quote_fields=False)
-    downloaded_photo = await photo.download(destination_file=BytesIO())
-    form.add_field(secrets.token_urlsafe(8), downloaded_photo)
+    async def upload_photo(self, photo: PhotoSize) -> UploadedFile:
+        form = aiohttp.FormData(quote_fields=False)
+        downloaded_photo = await photo.download(destination_file=BytesIO())
+        form.add_field(secrets.token_urlsafe(8), downloaded_photo)
 
-    session = await self.get_session()
-    response = await session.post(
-      BASE_TELEGRAPH_API_LINK.format(endpoint="upload"),
-      data=form
-    )
-    if not response.ok:
-      raise TelegraphAPIError(
-        "Something went wrong, response from telegraph is not successful. "
-        f"Response: {response}"
-      )
-    json_response = await response.json()
-    return UploadedFile.parse_obj(json_response)
+        session = await self.get_session()
+        response = await session.post(
+            BASE_TELEGRAPH_API_LINK.format(endpoint="upload"),
+            data=form
+        )
+        if not response.ok:
+            raise TelegraphAPIError(
+                "Something went wrong, response from telegraph is not successful. "
+                f"Response: {response}"
+            )
+        json_response = await response.json()
+        return UploadedFile.parse_obj(json_response)
 
-  async def get_session(self) -> aiohttp.ClientSession:
-    if self._session is None:
-      new_session = aiohttp.ClientSession()
-      self._session = new_session
-    return self._session
+    async def get_session(self) -> aiohttp.ClientSession:
+        if self._session is None:
+            new_session = aiohttp.ClientSession()
+            self._session = new_session
+        return self._session
 
-  async def close(self) -> None:
-    if self._session is None:
-      return None
-    await self._session.close()
+    async def close(self) -> None:
+        if self._session is None:
+            return None
+        await self._session.close()
 ```
 
 Давайте разберемся с этой реализаций поподробнее. Сразу же может возникнуть вопрос, почему мы сразу
@@ -161,8 +174,8 @@ class Telegraph(FileUploader):
 Теперь рассмотрим метод `upload_photo`, он получает объект `PhotoSize`, который мы импортировали из
 aiogram и в самом методе скачивает эту фотографию и добавляет её в некую форму, чтобы отправить
 запрос к API. Так же мы видим проверку `if not response.ok`, если что-то пошло не так и телеграф
-вернул нам статус код, который не равен 200 и последующий парсинг `json` ответа. Давайте поместим нашу
-реализацию в модуль `integrations/telegraph/client.py`.
+вернул нам статус код, который не равен 200 и последующий парсинг `json` ответа. Давайте поместим
+нашу реализацию в модуль `integrations/telegraph/client.py`.
 
 # Подключение обвертки в новый шаблон
 
@@ -182,27 +195,29 @@ from tgbot.integrations.telegraph.abstract import FileUploader
 
 
 class IntegrationMiddleware(LifetimeControllerMiddleware):
-  skip_patterns = ["error", "update"]
+    skip_patterns = ["error", "update"]
 
-  def __init__(self, uploader: FileUploader):
-    super().__init__()
-    self._uploader = uploader
+    def __init__(self, uploader: FileUploader):
+        super().__init__()
+        self._uploader = uploader
 
-  async def pre_process(self, obj: TelegramObject, data: Dict[Any, Any], *args: Any):
-    data["file_uploader"] = self._uploader
+    async def pre_process(self, obj: TelegramObject, data: Dict[Any, Any], *args: Any):
+        data["file_uploader"] = self._uploader
 ```
 
-Так же теперь нам нужно создать объект `TelegraphService` и передать его в конструктор `IntegrationMiddleware`:
+Так же теперь нам нужно создать объект `TelegraphService` и передать его в
+конструктор `IntegrationMiddleware`:
 
 ```python
 file_uploader = TelegraphService()
 dp.middleware.setup(IntegrationMiddleware(file_uploader))
 ```
 
-Однако, это ещё не всё😁 Нам потребуется закрывать сессию с помощью того самого метода `close`, который
-есть у `TelegraphClient`, но в мидлвари не самое подходящее место, так как сессию бы желательно не
-закрывать после каждого апдейта. Решением будет передать `FileUploader` не только в конструктор
-middleware, а так же в объект бота, чтобы далее можно было получить его в функции `on_shutdown`
+Однако, это ещё не всё😁 Нам потребуется закрывать сессию с помощью того самого метода `close`,
+который есть у `TelegraphClient`, но в мидлвари не самое подходящее место, так как сессию бы
+желательно не закрывать после каждого апдейта. Решением будет передать `FileUploader` не только в
+конструктор middleware, а так же в объект бота, чтобы далее можно было получить его в
+функции `on_shutdown`
 
 ```python
 from aiogram import Bot, Dispatcher
@@ -245,7 +260,8 @@ async def main():
 В этой статье мы разобрались, как можно реализовать отправку изображения пользователя на telegra.ph,
 и получение прямой ссылки на него.
 
-Код данной статьи вы можете найти в нашем ![github репозитории](https://github.com/GLEF1X/botfather_articles).
+Код данной статьи вы можете найти в
+нашем ![github репозитории](https://github.com/GLEF1X/botfather_articles).
 
 В статье за основу взята новая структура для написания телеграм ботов на базе aiogram.
 

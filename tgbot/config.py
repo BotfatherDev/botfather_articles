@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from aiogram.dispatcher.storage import BaseStorage
 from environs import Env
 
 
