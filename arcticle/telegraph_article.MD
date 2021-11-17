@@ -89,14 +89,18 @@ from aiogram.contrib.fsm_storage.redis import RedisStorage2
 from tgbot.config import load_config
 from tgbot.filters.admin import AdminFilter
 from tgbot.handlers.admin import register_admin
-from tgbot.handlers.echo import register_echo
 from tgbot.handlers.photos import register_photo_handlers
 from tgbot.handlers.user import register_user
+from tgbot.integrations.telegraph import TelegraphService, FileUploader
 from tgbot.middlewares.db import DbMiddleware
 from tgbot.middlewares.integration import IntegrationMiddleware
-from tgbot.integrations.telegraph import TelegraphService
 
 logger = logging.getLogger(__name__)
+
+
+async def on_shutdown(dp: Dispatcher):
+    file_uploader: FileUploader = dp.bot["file_uploader"]
+    await file_uploader.close()
 
 
 def register_all_middlewares(dp):
@@ -119,12 +123,12 @@ async def main():
         format=u'%(filename)s:%(lineno)d #%(levelname)-8s [%(asctime)s] - %(name)s - %(message)s',
     )
     logger.info("Starting bot")
-    config = load_config(".env")
+    config = load_config(".env.dist")
 
     storage = RedisStorage2() if config.tg_bot.use_redis else MemoryStorage()
     bot = Bot(token=config.tg_bot.token, parse_mode='HTML')
-    dp = Dispatcher(bot, storage=storage)
     file_uploader = TelegraphService()
+    dp = Dispatcher(bot, storage=storage)
     dp.middleware.setup(IntegrationMiddleware(file_uploader))
 
     bot["file_uploader"] = file_uploader
@@ -141,6 +145,7 @@ async def main():
         await dp.storage.close()
         await dp.storage.wait_closed()
         await bot.session.close()
+        await on_shutdown(dp)
 
 
 if __name__ == '__main__':
@@ -148,7 +153,6 @@ if __name__ == '__main__':
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logger.error("Bot stopped!")
-
 ```
 
 ---
